@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Boids Flocking Simulation</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #0a0f1c;
+            font-family: Arial, sans-serif;
+            color: white;
+        }
+        canvas {
+            border: 1px solid #333;
+            background: linear-gradient(135deg, #1e3c72, #2a5298);
+            display: block;
+            margin: 20px auto;
+        }
+        .controls {
+            max-width: 800px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .control-group {
+            background: rgba(255,255,255,0.1);
+            padding: 15px;
+            border-radius: 8px;
+            backdrop-filter: blur(5px);
+        }
+        .control-group h3 {
+            margin: 0 0 10px 0;
+            font-size: 14px;
+            color: #64ffda;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+            color: #ccc;
+        }
+        input[type="range"] {
+            width: 100%;
+            margin-bottom: 10px;
+        }
+        button {
+            background: #ff6b35;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        button:hover {
+            background: #ff5722;
+        }
+        .info {
+            text-align: center;
+            font-size: 12px;
+            color: #999;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <div class="control-group">
+            <h3>Flock Rules</h3>
+            <label>Separation: <span id="sepVal">1.5</span></label>
+            <input type="range" id="separation" min="0" max="3" step="0.1" value="1.5">
+            
+            <label>Alignment: <span id="aliVal">1.0</span></label>
+            <input type="range" id="alignment" min="0" max="3" step="0.1" value="1.0">
+            
+            <label>Cohesion: <span id="cohVal">1.0</span></label>
+            <input type="range" id="cohesion" min="0" max="3" step="0.1" value="1.0">
+        </div>
+        
+        <div class="control-group">
+            <h3>Perception</h3>
+            <label>Vision Range: <span id="visionVal">50</span></label>
+            <input type="range" id="vision" min="20" max="100" step="5" value="50">
+            
+            <label>Max Speed: <span id="speedVal">2</span></label>
+            <input type="range" id="maxSpeed" min="1" max="5" step="0.1" value="2">
+            
+            <label>Max Force: <span id="forceVal">0.03</span></label>
+            <input type="range" id="maxForce" min="0.01" max="0.1" step="0.01" value="0.03">
+        </div>
+        
+        <div class="control-group">
+            <h3>Population</h3>
+            <label>Bird Count: <span id="countVal">150</span></label>
+            <input type="range" id="birdCount" min="50" max="300" step="10" value="150">
+            
+            <button onclick="resetSimulation()">Reset Simulation</button>
+        </div>
+    </div>
+
+    <canvas id="canvas" width="800" height="600"></canvas>
+    
+    <div class="info">
+        Click and drag to add attraction points. Birds will be drawn to your mouse when pressed.
+    </div>
+
+    <script>
+        class Vector2 {
+            constructor(x = 0, y = 0) {
+                this.x = x;
+                this.y = y;
+            }
+
+            add(v) {
+                return new Vector2(this.x + v.x, this.y + v.y);
+            }
+
+            subtract(v) {
+                return new Vector2(this.x - v.x, this.y - v.y);
+            }
+
+            multiply(scalar) {
+                return new Vector2(this.x * scalar, this.y * scalar);
+            }
+
+            divide(scalar) {
+                return new Vector2(this.x / scalar, this.y / scalar);
+            }
+
+            magnitude() {
+                return Math.sqrt(this.x * this.x + this.y * this.y);
+            }
+
+            normalize() {
+                const mag = this.magnitude();
+                if (mag > 0) {
+                    return this.divide(mag);
+                }
+                return new Vector2(0, 0);
+            }
+
+            limit(max) {
+                if (this.magnitude() > max) {
+                    return this.normalize().multiply(max);
+                }
+                return new Vector2(this.x, this.y);
+            }
+
+            distance(v) {
+                return this.subtract(v).magnitude();
+            }
+        }
+
+        class Boid {
+            constructor(x, y) {
+                this.position = new Vector2(x, y);
+                this.velocity = new Vector2(Math.random() * 4 - 2, Math.random() * 4 - 2);
+                this.acceleration = new Vector2(0, 0);
+                this.size = 3;
+                this.trail = [];
+                this.maxTrailLength = 20;
+            }
+
+            flock(boids, params) {
+                const sep = this.separate(boids, params);
+                const ali = this.align(boids, params);
+                const coh = this.cohesion(boids, params);
+
+                // Apply weights
+                sep.x *= params.separation;
+                sep.y *= params.separation;
+                ali.x *= params.alignment;
+                ali.y *= params.alignment;
+                coh.x *= params.cohesion;
+                coh.y *= params.cohesion;
+
+                // Apply forces
+                this.acceleration = this.acceleration.add(sep);
+                this.acceleration = this.acceleration.add(ali);
+                this.acceleration = this.acceleration.add(coh);
+            }
+
+            separate(boids, params) {
+                const desiredSeparation = 25;
+                let steer = new Vector2(0, 0);
+                let count = 0;
+
+                for (let other of boids) {
+                    const d = this.position.distance(other.position);
+                    if (d > 0 && d < desiredSeparation) {
+                        let diff = this.position.subtract(other.position);
+                        diff = diff.normalize();
+                        diff = diff.divide(d); // Weight by distance
+                        steer = steer.add(diff);
+                        count++;
+                    }
+                }
+
+                if (count > 0) {
+                    steer = steer.divide(count);
+                    steer = steer.normalize();
+                    steer = steer.multiply(params.maxSpeed);
+                    steer = steer.subtract(this.velocity);
+                    steer = steer.limit(params.maxForce);
+                }
+                return steer;
+            }
+
+            align(boids, params) {
+                let sum = new Vector2(0, 0);
+                let count = 0;
+
+                for (let other of boids) {
+                    const d = this.position.distance(other.position);
+                    if (d > 0 && d < params.vision) {
+                        sum = sum.add(other.velocity);
+                        count++;
+                    }
+                }
+
+                if (count > 0) {
+                    sum = sum.divide(count);
+                    sum = sum.normalize();
+                    sum = sum.multiply(params.maxSpeed);
+                    let steer = sum.subtract(this.velocity);
+                    steer = steer.limit(params.maxForce);
+                    return steer;
+                }
+                return new Vector2(0, 0);
+            }
+
+            cohesion(boids, params) {
+                let sum = new Vector2(0, 0);
+                let count = 0;
+
+                for (let other of boids) {
+                    const d = this.position.distance(other.position);
+                    if (d > 0 && d < params.vision) {
+                        sum = sum.add(other.position);
+                        count++;
+                    }
+                }
+
+                if (count > 0) {
+                    sum = sum.divide(count);
+                    return this.seek(sum, params);
+                }
+                return new Vector2(0, 0);
+            }
+
+            seek(target, params) {
+                let desired = target.subtract(this.position);
+                desired = desired.normalize();
+                desired = desired.multiply(params.maxSpeed);
+                
+                let steer = desired.subtract(this.velocity);
+                steer = steer.limit(params.maxForce);
+                return steer;
+            }
+
+            update(params) {
+                // Update velocity
+                this.velocity = this.velocity.add(this.acceleration);
+                this.velocity = this.velocity.limit(params.maxSpeed);
+                
+                // Update position
+                this.position = this.position.add(this.velocity);
+                
+                // Add to trail
+                this.trail.push(new Vector2(this.position.x, this.position.y));
+                if (this.trail.length > this.maxTrailLength) {
+                    this.trail.shift();
+                }
+                
+                // Reset acceleration
+                this.acceleration = new Vector2(0, 0);
+                
+                // Wrap around edges
+                if (this.position.x < 0) this.position.x = canvas.width;
+                if (this.position.x > canvas.width) this.position.x = 0;
+                if (this.position.y < 0) this.position.y = canvas.height;
+                if (this.position.y > canvas.height) this.position.y = 0;
+            }
+
+            render(ctx) {
+                const angle = Math.atan2(this.velocity.y, this.velocity.x);
+                
+                // Draw trail
+                ctx.strokeStyle = 'rgba(100, 255, 218, 0.3)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                for (let i = 0; i < this.trail.length - 1; i++) {
+                    const alpha = i / this.trail.length;
+                    ctx.globalAlpha = alpha * 0.3;
+                    if (i === 0) {
+                        ctx.moveTo(this.trail[i].x, this.trail[i].y);
+                    } else {
+                        ctx.lineTo(this.trail[i].x, this.trail[i].y);
+                    }
+                }
+                ctx.stroke();
+                ctx.globalAlpha = 1;
+
+                // Draw boid as triangle
+                ctx.save();
+                ctx.translate(this.position.x, this.position.y);
+                ctx.rotate(angle);
+                
+                ctx.fillStyle = '#64ffda';
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 1;
+                
+                ctx.beginPath();
+                ctx.moveTo(8, 0);
+                ctx.lineTo(-4, -3);
+                ctx.lineTo(-4, 3);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+                
+                ctx.restore();
+            }
+        }
+
+        // Initialize canvas and context
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        // Simulation parameters
+        let params = {
+            separation: 1.5,
+            alignment: 1.0,
+            cohesion: 1.0,
+            vision: 50,
+            maxSpeed: 2,
+            maxForce: 0.03,
+            birdCount: 150
+        };
+
+        let boids = [];
+        let mousePos = new Vector2(0, 0);
+        let mousePressed = false;
+
+        // Initialize boids
+        function initBoids() {
+            boids = [];
+            for (let i = 0; i < params.birdCount; i++) {
+                boids.push(new Boid(
+                    Math.random() * canvas.width,
+                    Math.random() * canvas.height
+                ));
+            }
+        }
+
+        // Mouse interaction
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mousePos.x = e.clientX - rect.left;
+            mousePos.y = e.clientY - rect.top;
+        });
+
+        canvas.addEventListener('mousedown', () => {
+            mousePressed = true;
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            mousePressed = false;
+        });
+
+        // Control panel updates
+        function updateControls() {
+            document.getElementById('sepVal').textContent = params.separation;
+            document.getElementById('aliVal').textContent = params.alignment;
+            document.getElementById('cohVal').textContent = params.cohesion;
+            document.getElementById('visionVal').textContent = params.vision;
+            document.getElementById('speedVal').textContent = params.maxSpeed;
+            document.getElementById('forceVal').textContent = params.maxForce;
+            document.getElementById('countVal').textContent = params.birdCount;
+        }
+
+        // Add event listeners for controls
+        document.getElementById('separation').addEventListener('input', (e) => {
+            params.separation = parseFloat(e.target.value);
+            updateControls();
+        });
+
+        document.getElementById('alignment').addEventListener('input', (e) => {
+            params.alignment = parseFloat(e.target.value);
+            updateControls();
+        });
+
+        document.getElementById('cohesion').addEventListener('input', (e) => {
+            params.cohesion = parseFloat(e.target.value);
+            updateControls();
+        });
+
+        document.getElementById('vision').addEventListener('input', (e) => {
+            params.vision = parseFloat(e.target.value);
+            updateControls();
+        });
+
+        document.getElementById('maxSpeed').addEventListener('input', (e) => {
+            params.maxSpeed = parseFloat(e.target.value);
+            updateControls();
+        });
+
+        document.getElementById('maxForce').addEventListener('input', (e) => {
+            params.maxForce = parseFloat(e.target.value);
+            updateControls();
+        });
+
+        document.getElementById('birdCount').addEventListener('input', (e) => {
+            params.birdCount = parseInt(e.target.value);
+            updateControls();
+            initBoids(); // Reinitialize with new count
+        });
+
+        function resetSimulation() {
+            initBoids();
+        }
+
+        // Animation loop
+        function animate() {
+            ctx.fillStyle = 'rgba(30, 60, 114, 0.1)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Apply mouse attraction
+            if (mousePressed) {
+                for (let boid of boids) {
+                    let attraction = boid.seek(mousePos, params);
+                    attraction = attraction.multiply(0.5);
+                    boid.acceleration = boid.acceleration.add(attraction);
+                }
+            }
+
+            // Update boids
+            for (let boid of boids) {
+                boid.flock(boids, params);
+                boid.update(params);
+                boid.render(ctx);
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        // Initialize and start
+        initBoids();
+        updateControls();
+        animate();
+    </script>
+</body>
+</html>
